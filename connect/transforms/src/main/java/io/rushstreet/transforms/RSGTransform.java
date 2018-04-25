@@ -29,121 +29,59 @@ import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.DataException;
-//import org.apache.kafka.connect.transforms.ReplaceField;
 import org.apache.kafka.connect.transforms.Transformation;
 import org.apache.kafka.connect.transforms.util.SchemaUtil;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
 
+import java.util.Date;
 import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 
-import static org.apache.kafka.connect.transforms.util.Requirements.requireMap;
 import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
 
-public abstract class Cast<R extends ConnectRecord<R>> implements Transformation<R> {
+public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<R> {
 
-    // TODO: Currently we only support top-level field casting. Ideally we could use a dotted notation in the spec to
-    // allow casting nested fields.
     public static final String OVERVIEW_DOC =
-            "Cast fields or the entire key or value to a specific type, e.g. to force an integer field to a smaller "
-                    + "width. Only simple primitive types are supported -- integers, floats, boolean, and string. "
-                    + "<p/>Use the concrete transformation type designed for the record key (<code>" + Key.class.getName() + "</code>) "
-                    + "or value (<code>" + Value.class.getName() + "</code>).";
+            "Transforms numeric types to floats and dates to strings.";
 
-    public static final String SPEC_CONFIG = "spec";
+    public static final String TIMESTAMP_FIELD = "timestamp.field";
 
     public static final ConfigDef CONFIG_DEF = new ConfigDef()
-            .define(SPEC_CONFIG, ConfigDef.Type.LIST, ConfigDef.NO_DEFAULT_VALUE, new ConfigDef.Validator() {
-                    @SuppressWarnings("unchecked")
-                    @Override
-                    public void ensureValid(String name, Object valueObject) {
-                        List<String> value = (List<String>) valueObject;
-                        if (value == null || value.isEmpty()) {
-                            //throw new ConfigException("Must specify at least one field to cast.");
-                        }
-                        parseFieldTypes(value);
-                    }
-
-                    @Override
-                    public String toString() {
-                        return "list of colon-delimited pairs, e.g. <code>foo:bar,abc:xyz</code>";
-                    }
-            },
-            ConfigDef.Importance.HIGH,
-            "List of fields and the type to cast them to of the form field1:type,field2:type to cast fields of "
-                    + "Maps or Structs. A single type to cast the entire value. Valid types are int8, int16, int32, "
-                    + "int64, float32, float64, boolean, and string.");
-
-    private static final String PURPOSE = "cast types";
+            .define(TIMESTAMP_FIELD, ConfigDef.Type.STRING, null, ConfigDef.Importance.MEDIUM,
+                    "Field name for extract timestamp.");
+    
+    private static final String PURPOSE = "process messages for data reporting";
 
     private static final Set<Schema.Type> SUPPORTED_CAST_TYPES = EnumSet.of(
             Schema.Type.INT8, Schema.Type.INT16, Schema.Type.INT32, Schema.Type.INT64,
                     Schema.Type.FLOAT32, Schema.Type.FLOAT64, Schema.Type.BOOLEAN, Schema.Type.STRING
     );
 
-    // As a special case for casting the entire value (e.g. the incoming key is a int64 but you know it could be an
-    // int32 and want the smaller width), we use an otherwise invalid field name in the cast spec to track this.
-    private static final String WHOLE_VALUE_CAST = null;
-
-    private Map<String, Schema.Type> casts;
-    private Schema.Type wholeValueCastType;
+    private String extractTimestampField = null;
     private Cache<Schema, Schema> schemaUpdateCache;
+
+    @Override
+    public void close() {}
+
+    @Override
+    public ConfigDef config() {
+        return new ConfigDef();
+    }
 
     @Override
     public void configure(Map<String, ?> props) {
         final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
-        casts = parseFieldTypes(config.getList(SPEC_CONFIG));
-        wholeValueCastType = casts.get(WHOLE_VALUE_CAST);
+        extractTimestampField = config.getString(TIMESTAMP_FIELD);
         schemaUpdateCache = new SynchronizedCache<>(new LRUCache<Schema, Schema>(16));
     }
 
     @Override
     public R apply(R record) {
-        if (operatingSchema(record) == null) {
-            return applySchemaless(record);
-        } else {
-            return applyWithSchema(record);
-        }
-    }
-
-    @Override
-    public ConfigDef config() {
-        return CONFIG_DEF;
-    }
-
-    @Override
-    public void close() {
-    }
-
-
-    private R applySchemaless(R record) {
-        if (wholeValueCastType != null) {
-            return newRecord(record, null, castValueToType(operatingValue(record), wholeValueCastType));
-        }
-
-        final Map<String, Object> value = requireMap(operatingValue(record), PURPOSE);
-        final HashMap<String, Object> updatedValue = new HashMap<>(value);
-        for (Map.Entry<String, Schema.Type> fieldSpec : casts.entrySet()) {
-            String field = fieldSpec.getKey();
-            updatedValue.put(field, castValueToType(value.get(field), fieldSpec.getValue()));
-        }
-        return newRecord(record, null, updatedValue);
-    }
-
-    private R applyWithSchema(R record) {
         Schema updatedSchema = getOrBuildSchema(record);
 
-        // Whole-record casting
-        if (wholeValueCastType != null)
-            return newRecord(record, updatedSchema, castValueToType(operatingValue(record), wholeValueCastType));
-
-        // Casting within a struct
         final Struct value = requireStruct(operatingValue(record), PURPOSE);
         final Struct updatedValue = new Struct(updatedSchema);
         for (Field field : value.schema().fields()) {
@@ -151,58 +89,60 @@ public abstract class Cast<R extends ConnectRecord<R>> implements Transformation
             Schema.Type targetType;
             
             if (origFieldValue instanceof Timestamp) {
-            	//targetType = Schema.Type.INT64;
-            	targetType = Schema.Type.STRING;
+                //targetType = Schema.Type.INT64;
+                targetType = Schema.Type.STRING;
             } else if (origFieldValue instanceof BigDecimal) {
-            	if (((BigDecimal) origFieldValue).scale() <= 0)
+                if (((BigDecimal) origFieldValue).scale() <= 0)
                     targetType = Schema.Type.INT64;
-            	else
+                else
                     targetType = Schema.Type.FLOAT64;
             } else {
-            	targetType = null;
+                targetType = null;
             }
                    
             Object newFieldValue = targetType != null ? castValueToType(origFieldValue, targetType) : origFieldValue;            
             updatedValue.put(updatedSchema.field(field.name()), newFieldValue);
         }
+        
+        if (extractTimestampField != null)
+        	updatedValue.put(updatedSchema.field(extractTimestampField), new Date().getTime());
+        
         return newRecord(record, updatedSchema, updatedValue);
     }
 
     private Schema getOrBuildSchema(R record) {
-    	Struct value = requireStruct(operatingValue(record), PURPOSE);
+        Struct value = requireStruct(operatingValue(record), PURPOSE);
         Schema valueSchema = operatingSchema(record);
         Schema updatedSchema = schemaUpdateCache.get(valueSchema);
         if (updatedSchema != null)
             return updatedSchema;
 
-        final SchemaBuilder builder;
-        if (wholeValueCastType != null) {
-            builder = SchemaUtil.copySchemaBasics(valueSchema, convertFieldType(wholeValueCastType));
-        } else {
-            builder = SchemaUtil.copySchemaBasics(valueSchema, SchemaBuilder.struct());
-            for (Field field : valueSchema.fields()) {
-            	SchemaBuilder fieldBuilder;
-            	Object origFieldValue = value.get(field);
-            	
-            	if (origFieldValue instanceof Timestamp) {
-        			//fieldBuilder = convertFieldType(Schema.Type.INT64);
-    				fieldBuilder = convertFieldType(Schema.Type.STRING);
-            	} else if (origFieldValue instanceof BigDecimal) {
-            		if (((BigDecimal) origFieldValue).scale() <= 0)
-            			fieldBuilder = convertFieldType(Schema.Type.INT64);
-            		else
-            			fieldBuilder = convertFieldType(Schema.Type.FLOAT64);
-                } else {
-                	fieldBuilder = convertFieldType(field.schema().type());
-                }
-           
-            	if (field.schema().isOptional())
-                    fieldBuilder.optional();
-                if (field.schema().defaultValue() != null)
-                    fieldBuilder.defaultValue(castValueToType(field.schema().defaultValue(), fieldBuilder.type()));
-                builder.field(field.name(), fieldBuilder.build());
+        final SchemaBuilder builder = SchemaUtil.copySchemaBasics(valueSchema, SchemaBuilder.struct());
+        for (Field field : valueSchema.fields()) {
+            SchemaBuilder fieldBuilder;
+            Object origFieldValue = value.get(field);
+            
+            if (origFieldValue instanceof Timestamp) {
+                //fieldBuilder = convertFieldType(Schema.Type.INT64);
+                fieldBuilder = convertFieldType(Schema.Type.STRING);
+            } else if (origFieldValue instanceof BigDecimal) {
+                if (((BigDecimal) origFieldValue).scale() <= 0)
+                    fieldBuilder = convertFieldType(Schema.Type.INT64);
+                else
+                    fieldBuilder = convertFieldType(Schema.Type.FLOAT64);
+            } else {
+                fieldBuilder = convertFieldType(field.schema().type());
             }
+       
+            if (field.schema().isOptional())
+                fieldBuilder.optional();
+            if (field.schema().defaultValue() != null)
+                fieldBuilder.defaultValue(castValueToType(field.schema().defaultValue(), fieldBuilder.type()));
+            builder.field(field.name(), fieldBuilder.build());
         }
+        
+        if (extractTimestampField != null)
+        	builder.field(extractTimestampField, SchemaBuilder.int64().build());
 
         if (valueSchema.isOptional())
             builder.optional();
@@ -243,13 +183,13 @@ public abstract class Cast<R extends ConnectRecord<R>> implements Transformation
             if (value == null) return null;
         
             if (!(value instanceof BigDecimal || value instanceof Timestamp)) {
-	            Schema.Type inferredType = ConnectSchema.schemaType(value.getClass());
-	            if (inferredType == null) {
-	                throw new DataException("Cast transformation was passed a value of type " + value.getClass()
-	                        + " which is not supported by Connect's data API");
-	            }
-	            // Ensure the type we are trying to cast from is supported
-	            validCastType(inferredType, FieldType.INPUT);
+                Schema.Type inferredType = ConnectSchema.schemaType(value.getClass());
+                if (inferredType == null) {
+                    throw new DataException("Cast transformation was passed a value of type " + value.getClass()
+                            + " which is not supported by Connect's data API");
+                }
+                // Ensure the type we are trying to cast from is supported
+                validCastType(inferredType, FieldType.INPUT);
             }
             
             switch (targetType) {
@@ -314,7 +254,7 @@ public abstract class Cast<R extends ConnectRecord<R>> implements Transformation
         if (value instanceof Number)
             return ((Number) value).longValue();
         else if (value instanceof Timestamp)
-        	return ((Timestamp) value).getTime();
+            return ((Timestamp) value).getTime();
         else if (value instanceof Boolean)
             return ((boolean) value) ? (long) 1 : (long) 0;
         else if (value instanceof String)
@@ -357,48 +297,13 @@ public abstract class Cast<R extends ConnectRecord<R>> implements Transformation
     }
 
     private static String castToString(Object value) {
-    	if (value instanceof Timestamp) {
-	    	Timestamp ts = ((Timestamp) value);
-	    	java.util.Date date = new java.util.Date();
-	    	date.setTime(ts.getTime());
-	    	return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS z").format(date);
-    	} else
-    		return value.toString();
-    }
-
-    protected abstract Schema operatingSchema(R record);
-
-    protected abstract Object operatingValue(R record);
-
-    protected abstract R newRecord(R record, Schema updatedSchema, Object updatedValue);
-
-    private static Map<String, Schema.Type> parseFieldTypes(List<String> mappings) {
-        final Map<String, Schema.Type> m = new HashMap<>();
-        boolean isWholeValueCast = false;
-        for (String mapping : mappings) {
-            final String[] parts = mapping.split(":");
-            if (parts.length > 2) {
-             //   throw new ConfigException(ReplaceField.ConfigName.RENAME, mappings, "Invalid rename mapping: " + mapping);
-            }
-            if (parts.length == 1) {
-                Schema.Type targetType = Schema.Type.valueOf(parts[0].trim().toUpperCase(Locale.ROOT));
-                m.put(WHOLE_VALUE_CAST, validCastType(targetType, FieldType.OUTPUT));
-                isWholeValueCast = true;
-            } else {
-                Schema.Type type;
-                try {
-                    type = Schema.Type.valueOf(parts[1].trim().toUpperCase(Locale.ROOT));
-                } catch (IllegalArgumentException e) {
-                    throw new ConfigException("Invalid type found in casting spec: " + parts[1].trim(), e);
-                }
-                m.put(parts[0].trim(), validCastType(type, FieldType.OUTPUT));
-            }
+        if (value instanceof Timestamp) {
+            Timestamp ts = ((Timestamp) value);
+            Date date = new Date(ts.getTime());
+            return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(date);
+        } else {
+            return value.toString();
         }
-        if (isWholeValueCast && mappings.size() > 1) {
-            throw new ConfigException("Cast transformations that specify a type to cast the entire value to "
-                    + "may ony specify a single cast in their spec");
-        }
-        return m;
     }
 
     private enum FieldType {
@@ -418,39 +323,17 @@ public abstract class Cast<R extends ConnectRecord<R>> implements Transformation
         }
         return type;
     }
-
-    public static final class Key<R extends ConnectRecord<R>> extends Cast<R> {
-        @Override
-        protected Schema operatingSchema(R record) {
-            return record.keySchema();
-        }
-
-        @Override
-        protected Object operatingValue(R record) {
-            return record.key();
-        }
-
-        @Override
-        protected R newRecord(R record, Schema updatedSchema, Object updatedValue) {
-            return record.newRecord(record.topic(), record.kafkaPartition(), updatedSchema, updatedValue, record.valueSchema(), record.value(), record.timestamp());
-        }
+    
+    protected Schema operatingSchema(R record) {
+        return record.valueSchema();
     }
 
-    public static final class Value<R extends ConnectRecord<R>> extends Cast<R> {
-        @Override
-        protected Schema operatingSchema(R record) {
-            return record.valueSchema();
-        }
+    protected Object operatingValue(R record) {
+        return record.value();
+    }
 
-        @Override
-        protected Object operatingValue(R record) {
-            return record.value();
-        }
-
-        @Override
-        protected R newRecord(R record, Schema updatedSchema, Object updatedValue) {
-            return record.newRecord(record.topic(), record.kafkaPartition(), record.keySchema(), record.key(), updatedSchema, updatedValue, record.timestamp());
-        }
+    protected R newRecord(R record, Schema updatedSchema, Object updatedValue) {
+        return record.newRecord(record.topic(), record.kafkaPartition(), record.keySchema(), record.key(), updatedSchema, updatedValue, record.timestamp());
     }
 
 }
