@@ -322,6 +322,7 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
             }
         }
         return type;
+        
     }
     
     protected Schema operatingSchema(R record) {
