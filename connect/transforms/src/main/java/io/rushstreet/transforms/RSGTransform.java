@@ -101,7 +101,7 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
             }
                    
             Object newFieldValue = targetType != null ? castValueToType(origFieldValue, targetType) : origFieldValue;            
-            updatedValue.put(updatedSchema.field(field.name()), newFieldValue);
+            updatedValue.put(updatedSchema.field(field.name().toUpperCase()), newFieldValue);
         }
         
         if (extractTimestampField != null)
@@ -138,7 +138,7 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
                 fieldBuilder.optional();
             if (field.schema().defaultValue() != null)
                 fieldBuilder.defaultValue(castValueToType(field.schema().defaultValue(), fieldBuilder.type()));
-            builder.field(field.name(), fieldBuilder.build());
+            builder.field(field.name().toUpperCase(), fieldBuilder.build());
         }
         
         if (extractTimestampField != null)
@@ -322,7 +322,6 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
             }
         }
         return type;
-        
     }
     
     protected Schema operatingSchema(R record) {
