@@ -17,9 +17,6 @@
 
 package io.rushstreet.transforms;
 
-import org.apache.kafka.common.cache.Cache;
-import org.apache.kafka.common.cache.LRUCache;
-import org.apache.kafka.common.cache.SynchronizedCache;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.connector.ConnectRecord;
@@ -35,6 +32,7 @@ import org.apache.kafka.connect.transforms.util.SimpleConfig;
 
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.math.BigDecimal;
@@ -61,7 +59,7 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     );
 
     private String extractTimestampField = null;
-    private Cache<Schema, Schema> schemaUpdateCache;
+    private HashMap<String, Schema.Type> dateMap;
 
     @Override
     public void close() {}
@@ -75,19 +73,22 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     public void configure(Map<String, ?> props) {
         final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
         extractTimestampField = config.getString(TIMESTAMP_FIELD);
-        schemaUpdateCache = new SynchronizedCache<>(new LRUCache<Schema, Schema>(16));
+        dateMap = new HashMap<>();
     }
 
     @Override
     public R apply(R record) {
         Schema updatedSchema = getOrBuildSchema(record);
-
         final Struct value = requireStruct(operatingValue(record), PURPOSE);
         final Struct updatedValue = new Struct(updatedSchema);
+        
         for (Field field : value.schema().fields()) {
             Object origFieldValue = value.get(field);
-            Schema.Type targetType;
             
+            if (origFieldValue == null && !dateMap.containsKey(field.name().toUpperCase()))
+            	continue;
+            
+            Schema.Type targetType;       
             if (origFieldValue instanceof Timestamp) {
                 //targetType = Schema.Type.INT64;
                 targetType = Schema.Type.STRING;
@@ -100,7 +101,7 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
                 targetType = null;
             }
                    
-            Object newFieldValue = targetType != null ? castValueToType(origFieldValue, targetType) : origFieldValue;            
+            Object newFieldValue = targetType != null ? castValueToType(origFieldValue, targetType) : origFieldValue;
             updatedValue.put(updatedSchema.field(field.name().toUpperCase()), newFieldValue);
         }
         
@@ -113,16 +114,17 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     private Schema getOrBuildSchema(R record) {
         Struct value = requireStruct(operatingValue(record), PURPOSE);
         Schema valueSchema = operatingSchema(record);
-        Schema updatedSchema = schemaUpdateCache.get(valueSchema);
-        if (updatedSchema != null)
-            return updatedSchema;
 
         final SchemaBuilder builder = SchemaUtil.copySchemaBasics(valueSchema, SchemaBuilder.struct());
         for (Field field : valueSchema.fields()) {
             SchemaBuilder fieldBuilder;
             Object origFieldValue = value.get(field);
-            
-            if (origFieldValue instanceof Timestamp) {
+            if (origFieldValue == null) {
+            	if (dateMap.containsKey(field.name().toUpperCase()))
+            		fieldBuilder = convertFieldType(dateMap.get(field.name().toUpperCase()));
+            	else
+            		continue;
+            } else if (origFieldValue instanceof Timestamp) {
                 //fieldBuilder = convertFieldType(Schema.Type.INT64);
                 fieldBuilder = convertFieldType(Schema.Type.STRING);
             } else if (origFieldValue instanceof BigDecimal) {
@@ -133,6 +135,8 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
             } else {
                 fieldBuilder = convertFieldType(field.schema().type());
             }
+
+            dateMap.put(field.name().toUpperCase(), fieldBuilder.type());
        
             if (field.schema().isOptional())
                 fieldBuilder.optional();
@@ -149,9 +153,7 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
         if (valueSchema.defaultValue() != null)
             builder.defaultValue(castValueToType(valueSchema.defaultValue(), builder.type()));
 
-        updatedSchema = builder.build();
-        schemaUpdateCache.put(valueSchema, updatedSchema);
-        return updatedSchema;
+        return builder.build();
     }
 
     private SchemaBuilder convertFieldType(Schema.Type type) {
