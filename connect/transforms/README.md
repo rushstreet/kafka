@@ -6,7 +6,8 @@
 2. [Importing into Eclipse](#importing-into-eclipse)
 3. [Implementation](#implementation)
 4. [Exporting JAR](#exporting-jar)
-5. [Resources](#resources)
+5. [Configuration](#configuration)
+6. [Resources](#resources)
 
 ## Introduction
 
@@ -335,6 +336,27 @@ We then put the new values in an `updatedValue` struct and return `newRecord(rec
 4. Select the export destination (this should be a location in your Kafka classpath)
 
 5. Click *Finish*
+
+## Configuration
+
+If you have defined a `ConfigDef` in your single message transform, you can pass the expected configuration in your connector definition like so:
+
+```
+{
+    "name": <connector-name>
+    "config": {
+        
+        ...
+
+        "transforms": "rsg_transform",
+        "transforms.rsg_transform.type":"io.rushstreet.transforms.RSGTransform",
+        "transforms.rsg_transform.timestamp.field": "_EXTRACT_MILLIS",
+
+        ...
+
+    }
+}
+```
 
 ## Resources
 
