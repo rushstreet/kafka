@@ -206,6 +206,10 @@ The following options should be set with a `-P` switch, for example `./gradlew -
 
 See [vagrant/README.md](vagrant/README.md).
 
+### Single Message Transforms ###
+
+See [connect/transforms/README.md](connect/transforms/README.md).
+
 ### Contribution ###
 
 Apache Kafka is interested in building the community; we would welcome any thoughts or [patches](https://issues.apache.org/jira/browse/KAFKA). You can reach us [on the Apache mailing lists](http://kafka.apache.org/contact.html).
