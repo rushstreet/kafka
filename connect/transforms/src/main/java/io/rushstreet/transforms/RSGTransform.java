@@ -108,22 +108,12 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     }
 
     private Schema getOrBuildSchema(R record) {
-        Struct value = requireStruct(operatingValue(record), PURPOSE);
         Schema valueSchema = operatingSchema(record);
         final SchemaBuilder builder = SchemaUtil.copySchemaBasics(valueSchema, SchemaBuilder.struct());
 
         for (Field field : valueSchema.fields()) {
             SchemaBuilder fieldBuilder;
             Schema fieldSchema = field.schema();
-            Object origFieldValue = value.get(field);
-
-            System.out.println("\n\n\n\n\n\nSCHEMA!!!!!!");
-            System.out.println(origFieldValue.getClass());
-            System.out.println(fieldSchema);
-            System.out.println(fieldSchema.doc());
-            System.out.println(fieldSchema.type());
-            System.out.println(fieldSchema.name());
-            System.out.println(fieldSchema.parameters());
 
         	if ("org.apache.kafka.connect.data.Timestamp".equals(fieldSchema.name())
         			|| "org.apache.kafka.connect.data.Date".equals(fieldSchema.name())) {
