@@ -30,12 +30,12 @@ import org.apache.kafka.connect.transforms.Transformation;
 import org.apache.kafka.connect.transforms.util.SchemaUtil;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
 
-import java.util.Date;
 import java.util.EnumSet;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 import java.math.BigDecimal;
+import java.sql.Date;
 import java.sql.Timestamp;
 
 import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
@@ -59,7 +59,6 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     );
 
     private String extractTimestampField = null;
-    private HashMap<String, Schema.Type> dateMap;
 
     @Override
     public void close() {}
@@ -73,7 +72,6 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     public void configure(Map<String, ?> props) {
         final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
         extractTimestampField = config.getString(TIMESTAMP_FIELD);
-        dateMap = new HashMap<>();
     }
 
     @Override
@@ -83,16 +81,14 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
         final Struct updatedValue = new Struct(updatedSchema);
         
         for (Field field : value.schema().fields()) {
+        	Schema fieldSchema = field.schema();
             Object origFieldValue = value.get(field);
-            
-            if (origFieldValue == null && !dateMap.containsKey(field.name().toUpperCase()))
-            	continue;
-            
             Schema.Type targetType;       
-            if (origFieldValue instanceof Timestamp) {
-                //targetType = Schema.Type.INT64;
+            
+            if ("org.apache.kafka.connect.data.Timestamp".equals(fieldSchema.name())
+        			|| "org.apache.kafka.connect.data.Date".equals(fieldSchema.name())) {
                 targetType = Schema.Type.STRING;
-            } else if (origFieldValue instanceof BigDecimal) {
+            } else if ("org.apache.kafka.connect.data.Decimal".equals(fieldSchema.name())) {
                 if (((BigDecimal) origFieldValue).scale() <= 0)
                     targetType = Schema.Type.INT64;
                 else
@@ -106,38 +102,38 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
         }
         
         if (extractTimestampField != null)
-        	updatedValue.put(updatedSchema.field(extractTimestampField), new Date().getTime());
+        	updatedValue.put(updatedSchema.field(extractTimestampField), new java.util.Date().getTime());
         
         return newRecord(record, updatedSchema, updatedValue);
     }
 
     private Schema getOrBuildSchema(R record) {
-        Struct value = requireStruct(operatingValue(record), PURPOSE);
         Schema valueSchema = operatingSchema(record);
-
         final SchemaBuilder builder = SchemaUtil.copySchemaBasics(valueSchema, SchemaBuilder.struct());
+
         for (Field field : valueSchema.fields()) {
             SchemaBuilder fieldBuilder;
-            Object origFieldValue = value.get(field);
-            if (origFieldValue == null) {
-            	if (dateMap.containsKey(field.name().toUpperCase()))
-            		fieldBuilder = convertFieldType(dateMap.get(field.name().toUpperCase()));
-            	else
-            		continue;
-            } else if (origFieldValue instanceof Timestamp) {
-                //fieldBuilder = convertFieldType(Schema.Type.INT64);
-                fieldBuilder = convertFieldType(Schema.Type.STRING);
-            } else if (origFieldValue instanceof BigDecimal) {
-                if (((BigDecimal) origFieldValue).scale() <= 0)
-                    fieldBuilder = convertFieldType(Schema.Type.INT64);
-                else
-                    fieldBuilder = convertFieldType(Schema.Type.FLOAT64);
-            } else {
-                fieldBuilder = convertFieldType(field.schema().type());
-            }
+            Schema fieldSchema = field.schema();
 
-            dateMap.put(field.name().toUpperCase(), fieldBuilder.type());
-       
+        	if ("org.apache.kafka.connect.data.Timestamp".equals(fieldSchema.name())
+        			|| "org.apache.kafka.connect.data.Date".equals(fieldSchema.name())) {
+        		fieldBuilder = convertFieldType(Schema.Type.STRING);
+        		fieldBuilder.parameter("logicalType", "timestamp");
+        	} else {
+        		if ("org.apache.kafka.connect.data.Decimal".equals(fieldSchema.name())) {
+	                if (Integer.parseInt(fieldSchema.parameters().get("scale")) <= 0)
+	                    fieldBuilder = convertFieldType(Schema.Type.INT64);
+	                else
+	                    fieldBuilder = convertFieldType(Schema.Type.FLOAT64);
+	            } else {
+	            	fieldBuilder = convertFieldType(field.schema().type());
+	            }
+        		
+        		if (fieldSchema.parameters() != null)
+                	fieldBuilder.parameters(fieldSchema.parameters());
+        	}
+            
+            
             if (field.schema().isOptional())
                 fieldBuilder.optional();
             if (field.schema().defaultValue() != null)
@@ -177,14 +173,13 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
             default:
                 throw new DataException("Unexpected type in Cast transformation: " + type);
         }
-
     }
 
     private static Object castValueToType(Object value, Schema.Type targetType) {
         try {
             if (value == null) return null;
         
-            if (!(value instanceof BigDecimal || value instanceof Timestamp)) {
+            if (!(value instanceof BigDecimal || value instanceof Timestamp || value instanceof Date)) {
                 Schema.Type inferredType = ConnectSchema.schemaType(value.getClass());
                 if (inferredType == null) {
                     throw new DataException("Cast transformation was passed a value of type " + value.getClass()
@@ -257,6 +252,8 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
             return ((Number) value).longValue();
         else if (value instanceof Timestamp)
             return ((Timestamp) value).getTime();
+        else if (value instanceof Date)
+            return ((Date) value).getTime();
         else if (value instanceof Boolean)
             return ((boolean) value) ? (long) 1 : (long) 0;
         else if (value instanceof String)
@@ -301,8 +298,15 @@ public class RSGTransform<R extends ConnectRecord<R>> implements Transformation<
     private static String castToString(Object value) {
         if (value instanceof Timestamp) {
             Timestamp ts = ((Timestamp) value);
-            Date date = new Date(ts.getTime());
-            return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(date);
+            java.util.Date date = new java.util.Date(ts.getTime());
+            java.text.DateFormat formatter = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+            formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return formatter.format(date);
+        } else if (value instanceof Date) {
+        	java.util.Date date = new java.util.Date(((Date) value).getTime());
+            java.text.DateFormat formatter = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+            formatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return formatter.format(date);
         } else {
             return value.toString();
         }
